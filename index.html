@@ -8378,26 +8378,30 @@ function startUsersListener(){
 }
 async function identityBoot(){
   if(bootPromise)return bootPromise;
+  /* Acceso inmediato: primero habilitar usuarios locales y luego sincronizar Firebase
+     completamente en segundo plano. El usuario nunca espera la red para iniciar sesión. */
+  const local=localUsers();
+  usersReady=local.length>0;
+  window.populateLoginUsers?.();
+  setLoginState(local.length?'Acceso disponible · sincronizando usuarios en segundo plano':'Cargando usuarios…',!local.length);
   bootPromise=(async()=>{
-    setLoginState('Conectando con el Centro de Usuarios…',true);
     try{
       const users=await fetchGlobalUsers();
-      usersReady=true;startUsersListener();
+      usersReady=users.length>0;
+      try{startUsersListener()}catch(listenerErr){console.warn('[V3.7.1.1 listener diferido]',listenerErr)}
       window.populateLoginUsers?.();
-      setLoginState(users.length?'Usuarios globales cargados desde Firebase':'No existen usuarios disponibles',!users.length);
+      setLoginState(users.length?'Centro de Usuarios sincronizado':'No existen usuarios disponibles',!users.length);
       return users;
     }catch(err){
-      console.error('[V3.7.1.1 identidad]',err);
-      const local=localUsers();usersReady=local.length>0;
+      console.warn('[V3.7.1.1 identidad en segundo plano]',err);
+      const fallback=localUsers();usersReady=fallback.length>0;
       window.populateLoginUsers?.();
-      setLoginState(local.length?'Acceso disponible · sincronización en segundo plano':'No se pudo cargar usuarios desde Firebase',!local.length);
-      /* Safari al abrir mediante file:// puede tardar o bloquear temporalmente la primera
-         lectura. No dejamos el login congelado: reintentamos sin bloquear al usuario. */
-      if(local.length)setTimeout(()=>{bootPromise=null;identityBoot().catch(()=>{})},15000);
-      return local;
+      setLoginState(fallback.length?'Acceso disponible · modo local protegido':'No se pudo cargar usuarios',!fallback.length);
+      if(fallback.length)setTimeout(()=>{bootPromise=null;identityBoot().catch(()=>{})},20000);
+      return fallback;
     }
   })();
-  return bootPromise;
+  return local.length?Promise.resolve(local):bootPromise;
 }
 function sessionId(){return 'ses_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,9)}
 function deviceInfo(){return {deviceId:localStorage.getItem('ERP_COMPRAS_FIREBASE_DEVICE_ID')||'dispositivo_'+Math.random().toString(36).slice(2),userAgent:navigator.userAgent,platform:navigator.platform||'',language:navigator.language||'',online:navigator.onLine}}
@@ -8417,13 +8421,16 @@ async function writeSession(user,status,id){
 const previousShowLogin=window.showLogin;
 window.showLogin=function(){
   previousShowLogin?.();
-  setLoginState('Conectando con el Centro de Usuarios…',true);
-  identityBoot().then(()=>setTimeout(()=>document.getElementById('loginPassword')?.focus(),60));
+  const local=localUsers();
+  window.populateLoginUsers?.();
+  setLoginState(local.length?'Acceso disponible · sincronización automática':'Cargando usuarios…',!local.length);
+  setTimeout(()=>document.getElementById('loginPassword')?.focus(),60);
+  /* La nube se actualiza sin bloquear el formulario. */
+  identityBoot().catch(()=>{});
 };
 
 window.performLogin=async function(){
-  setLoginState('Validando usuario en Firebase…',true);
-  const users=await identityBoot();
+  const users=localUsers();
   const id=safeText(document.getElementById('loginUser')?.value).trim();
   const pass=safeText(document.getElementById('loginPassword')?.value);
   const user=users.find(u=>u.id===id&&u.estado==='Activo');
@@ -8432,16 +8439,19 @@ window.performLogin=async function(){
     window.toast?.('Usuario o contraseña incorrectos');
     const p=document.getElementById('loginPassword');if(p){p.value='';p.focus()}return;
   }
-  const sid=await writeSession(user,'Activa');
+  setLoginState('Acceso correcto',false);
+  const sid=sessionId();
   const session={userId:user.id,sessionId:sid,loginAt:new Date().toISOString(),global:true};
   sessionStorage.setItem(SESSION_KEY,JSON.stringify(session));localStorage.removeItem(SESSION_KEY);
   const updated=users.map(u=>u.id===user.id?{...u,lastAccess:new Date().toISOString(),lastDevice:deviceInfo().deviceId}:u);
   storeUsersLocal(updated);
-  try{await getDb().collection(COLLECTION).doc(USERS_DOC).set({type:'users',records:updated,count:updated.length,updatedAt:new Date().toISOString(),updatedBy:deviceInfo().deviceId,version:'V3.7.1.1'})}catch(err){console.error('[V3.7.1.1 último acceso]',err)}
   document.getElementById('loginOverlay')?.classList.remove('open');document.body.classList.remove('v3629-locked');
   window.updateUserUI?.();window.applyPermissionUI?.();window.renderAll?.();
-  window.addAuditEvent?.('Seguridad','Inicio de sesión global',`${user.nombre} · ${user.rol}`,'firebase');
+  window.addAuditEvent?.('Seguridad','Inicio de sesión',`${user.nombre} · ${user.rol}`,'local+nube');
   window.toast?.('Bienvenido, '+user.nombre);
+  /* Registrar sesión y último acceso en Firebase sin retrasar la entrada al ERP. */
+  writeSession(user,'Activa',sid).catch(()=>{});
+  getDb().collection(COLLECTION).doc(USERS_DOC).set({type:'users',records:updated,count:updated.length,updatedAt:new Date().toISOString(),updatedBy:deviceInfo().deviceId,version:'V3.7.1.1'}).catch(err=>console.warn('[V3.7.1.1 último acceso diferido]',err));
 };
 
 window.logoutERP=async function(){
@@ -8455,7 +8465,7 @@ window.v3711RefreshGlobalUsers=async function(){bootPromise=null;const rows=awai
 window.v3711IdentityReady=()=>usersReady;
 
 function boot(){
-  document.querySelectorAll('.version').forEach(v=>v.textContent='V3.7.1.1 · USUARIOS GLOBALES + SESIONES · SAFARI');
+  document.querySelectorAll('.version').forEach(v=>v.textContent='V3.7.1.1 · ACCESO INMEDIATO + USUARIOS GLOBALES');
   identityBoot().then(()=>{
     if(!window.currentERPUser?.())window.showLogin?.();
     else{document.body.classList.remove('v3629-locked');window.updateUserUI?.();window.applyPermissionUI?.()}
