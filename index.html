@@ -2910,6 +2910,40 @@ function filteredReceptionOrders(){
     return (!q||txt.includes(q))&&(!state||s.estado===state);
   }).sort((a,b)=>String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')));
 }
+
+function inventoryReceptionActionButton(order){
+  if(!orderHasInventoryItems(order))return '';
+
+  const pending=typeof pendingInventoryItemsForOrder==='function'
+    ? pendingInventoryItemsForOrder(order)
+    : [];
+
+  if(pending.length){
+    const qty=typeof pendingInventoryQtyForOrder==='function'
+      ? pendingInventoryQtyForOrder(order)
+      : pending.reduce((sum,row)=>sum+Number(row.availableToInventory||0),0);
+
+    return `<button class="btn" onclick="prepareInventory('${order.id}')">📦 Inventario Enterprise${qty>0?` (${qty})`:''}</button>`;
+  }
+
+  return `<button class="btn ghost" onclick="openInventoryEnterpriseForOrder('${order.id}')">📦 Ver Inventario Enterprise</button>`;
+}
+
+function openInventoryEnterpriseForOrder(orderId){
+  const order=orders.find(x=>x.id===orderId);
+  if(!order)return;
+
+  go('ingresoInventario');
+
+  requestAnimationFrame(()=>{
+    const input=document.getElementById('qInventory');
+    if(input){
+      input.value=String(order.codigo||'');
+      try{renderInventoryEntries()}catch(_){}
+    }
+  });
+}
+
 function renderReception(){
   const el=$('recepcion');if(!el)return;
   const rows=filteredReceptionOrders();
@@ -2938,7 +2972,7 @@ function renderReception(){
         <td><div class="reception-progress"><div class="reception-progress-head"><span>${s.received} / ${s.ordered}</span><b>${s.percent}%</b></div><div class="reception-progress-track"><div class="reception-progress-fill" style="width:${s.percent}%"></div></div></div></td>
         <td><span class="badge ${receptionBadgeClass(s.estado)}">${esc(s.estado)}</span></td>
         <td>${esc(providerCompliance(o,last))}</td>
-        <td><button class="btn blue" onclick="openReception('${o.id}')">${s.received?'➕ Continuar':'🚚 Recepcionar'}</button> <button class="btn ghost" onclick="openTransit('${o.id}')">🚛 Despacho</button> ${s.history.length?`<button class="btn ghost" onclick="viewReceptionHistory('${o.id}')">📋 Historial</button>`:''} ${pendingInventoryItemsForOrder(o).length?`<button class="btn" onclick="prepareInventory('${o.id}')">📦 Inventario (${pendingInventoryQtyForOrder(o)})</button>`:''} ${s.estado==='Recepción completa'&&orderHasTechnicalServiceItems(o)?`<button class="btn purple" onclick="openTechnicalServiceFromOrder('${o.id}')">🛠 Servicio técnico</button>`:''} ${orderReadyForInvoice(o)?`<button class="btn blue" onclick="openInvoice('${o.id}')">🧾 Factura</button>`:''}</td>
+        <td><button class="btn blue" onclick="openReception('${o.id}')">${s.received?'➕ Continuar':'🚚 Recepcionar'}</button> <button class="btn ghost" onclick="openTransit('${o.id}')">🚛 Despacho</button> ${s.history.length?`<button class="btn ghost" onclick="viewReceptionHistory('${o.id}')">📋 Historial</button>`:''} ${inventoryReceptionActionButton(o)} ${s.estado==='Recepción completa'&&orderHasTechnicalServiceItems(o)?`<button class="btn purple" onclick="openTechnicalServiceFromOrder('${o.id}')">🛠 Servicio técnico</button>`:''} ${orderReadyForInvoice(o)?`<button class="btn blue" onclick="openInvoice('${o.id}')">🧾 Factura</button>`:''}</td>
       </tr>`}).join('')||'<tr><td colspan="10" class="empty">No existen Órdenes de Compra para recepción.</td></tr>'}
       </tbody></table></div>
     </div>
@@ -11749,7 +11783,14 @@ async function boot(){
      return;
    }
    apply(incoming);
- },e=>{console.error('[V3.7.2.24.3 listener]',e);setStatus('🔴 Error de sincronización','error')});
+ },e=>{
+   console.error('[V3.7.2.24.3 listener]',e);
+   setStatus('🟡 Inventario en reconexión…','sync');
+   clearTimeout(window.__erpInvRetryTimer);
+   window.__erpInvRetryTimer=setTimeout(()=>{
+     try{boot().catch(err=>console.error('[V3.9.7 retry inventario]',err))}catch(err){console.error('[V3.9.7 retry inventario]',err)}
+   },3500);
+ });
  installHooks();updateCounters();
 }
 function formData(kind){
@@ -11794,8 +11835,18 @@ document.addEventListener('visibilitychange',()=>{
 window.saveInventoryEnterpriseOfficial=writeNow;
 window.loadInventoryEnterpriseOfficial=boot;
 window.erpInventoryStableState=()=>JSON.parse(JSON.stringify(official));
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(()=>boot().catch(e=>{console.error('[V3.7.2.6 boot]',e);setStatus('🔴 Error de sincronización','error')}),2600));
-else setTimeout(()=>boot().catch(e=>{console.error('[V3.7.2.6 boot]',e);setStatus('🔴 Error de sincronización','error')}),2600);
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(()=>boot().catch(e=>{
+ console.error('[V3.7.2.6 boot]',e);
+ setStatus('🟡 Inventario en reconexión…','sync');
+ clearTimeout(window.__erpInvRetryTimer);
+ window.__erpInvRetryTimer=setTimeout(()=>boot().catch(err=>console.error('[V3.9.7 retry inventario]',err)),3500);
+}),2600));
+else setTimeout(()=>boot().catch(e=>{
+ console.error('[V3.7.2.6 boot]',e);
+ setStatus('🟡 Inventario en reconexión…','sync');
+ clearTimeout(window.__erpInvRetryTimer);
+ window.__erpInvRetryTimer=setTimeout(()=>boot().catch(err=>console.error('[V3.9.7 retry inventario]',err)),3500);
+}),2600);
 })();
 </script>
 
@@ -17264,6 +17315,135 @@ if(document.readyState==='loading'){
 })();
 </script>
 
+<script id="v390-motor-enterprise-roles-permisos">
+(function(){
+'use strict';
+const VERSION='V3.9.0 · MOTOR ENTERPRISE DE ROLES Y PERMISOS';
+const OFFICIAL_ROLES=['Administrador','Gerencia','Calidad','Financiera','Laboratorio'];
+const USERS_KEY='ERP_COMPRAS_USUARIOS_V3_0_8';
+const OPERATIONAL_MODULES=[
+'dashboard','proveedores','productos','solicitudes','cotizaciones','ordenes','recepcion',
+'ingresoInventario','lotesInventario','kardexIntegrado','inventarioEnterprise','serviciosTecnicos','facturas',
+'cuentasPagar','pagos','evaluacionProveedores','alertas','dashboardCorporativo','aprobaciones'
+];
+const ADMIN_ONLY=['usuariosSeguridad','operacionSegura','auditoria','control'];
+const ALL_MODULES=[...OPERATIONAL_MODULES,...ADMIN_ONLY];
+const LAB_EDIT=['dashboard','proveedores','productos','solicitudes','cotizaciones','ordenes','recepcion','ingresoInventario','lotesInventario','kardexIntegrado','inventarioEnterprise','serviciosTecnicos'];
+const FIN_EDIT=['facturas','cuentasPagar','pagos'];
+const ROLE_POLICY={
+ Administrador:{view:ALL_MODULES,edit:ALL_MODULES,create:ALL_MODULES,delete:ALL_MODULES,approve:ALL_MODULES,sign:['ordenes'],export:ALL_MODULES},
+ Gerencia:{view:OPERATIONAL_MODULES,edit:[],create:[],delete:[],approve:[],sign:['ordenes'],export:OPERATIONAL_MODULES},
+ Calidad:{view:OPERATIONAL_MODULES,edit:OPERATIONAL_MODULES,create:OPERATIONAL_MODULES,delete:OPERATIONAL_MODULES,approve:OPERATIONAL_MODULES,sign:['ordenes'],export:OPERATIONAL_MODULES},
+ Financiera:{view:OPERATIONAL_MODULES,edit:FIN_EDIT,create:FIN_EDIT,delete:FIN_EDIT,approve:FIN_EDIT,sign:[],export:OPERATIONAL_MODULES},
+ Laboratorio:{view:OPERATIONAL_MODULES,edit:LAB_EDIT,create:LAB_EDIT,delete:LAB_EDIT,approve:LAB_EDIT,sign:[],export:OPERATIONAL_MODULES}
+};
+const READ_ACTIONS=new Set(['view','ver','read','consultar','details','detalle','filter','filtrar','search','buscar','refresh','actualizar']);
+const EXPORT_ACTIONS=new Set(['export','exportar','download','descargar','print','imprimir','pdf','excel','report','reporte']);
+function clean(v){return String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase()}
+function normalizeRole(value){
+ const r=clean(value);
+ if(r==='administrador'||r==='admin')return 'Administrador';
+ if(r==='gerencia')return 'Gerencia';
+ if(r==='calidad')return 'Calidad';
+ if(r==='financiera'||r==='contabilidad'||r==='financiero')return 'Financiera';
+ if(r==='laboratorio'||r==='compras'||r==='bodega'||r==='consulta')return 'Laboratorio';
+ return '';
+}
+function activeUser(){try{return typeof currentERPUser==='function'?currentERPUser():null}catch(_){return null}}
+function activeRole(){return normalizeRole(activeUser()?.rol)}
+function normalizeAction(action){
+ const a=clean(action||'view');
+ if(READ_ACTIONS.has(a))return 'view';
+ if(EXPORT_ACTIONS.has(a))return 'export';
+ if(a.includes('firm'))return 'sign';
+ if(a.includes('aprob')||a.includes('autoriz'))return 'approve';
+ if(a.includes('elimin')||a.includes('borr')||a.includes('anul'))return 'delete';
+ if(a.includes('crea')||a.includes('nuevo')||a.includes('nueva')||a.includes('agreg')||a.includes('registr'))return 'create';
+ return a==='edit'||a==='editar'||a==='write'||a==='guardar'?'edit':a;
+}
+function permitted(module,action='view'){
+ const role=activeRole(),mod=String(module||''),act=normalizeAction(action);
+ const policy=ROLE_POLICY[role];
+ if(!policy||!ALL_MODULES.includes(mod))return false;
+ const list=policy[act]||policy.edit||[];
+ return Array.isArray(list)&&list.includes(mod);
+}
+function deny(module,action){
+ const role=activeRole()||'Sin rol';
+ try{window.toast?.(`El rol ${role} no tiene permiso para esta acción`)}catch(_){}
+ try{window.addAuditEvent?.('Seguridad','Acción bloqueada',`${activeUser()?.nombre||'Usuario'} · ${role} · ${module} · ${action}`,'local')}catch(_){}
+ return false;
+}
+window.ERP_ROLE_ENGINE_V390={version:VERSION,roles:OFFICIAL_ROLES,policy:ROLE_POLICY,normalizeRole,hasPermission:permitted};
+try{hasPermission=function(m,a='view'){return permitted(m,a)};requirePermission=function(m,a='view'){return permitted(m,a)||deny(m,a)}}catch(_){}
+window.hasPermission=(m,a='view')=>permitted(m,a);
+window.requirePermission=(m,a='view')=>permitted(m,a)||deny(m,a);
+try{roleRules=function(u=activeUser()){return ROLE_POLICY[normalizeRole(u?.rol)]||{view:[]}}}catch(_){}
+window.ROLE_MATRIX=ROLE_POLICY;
+
+function sanitizeUser(u){
+ const role=normalizeRole(u?.rol)||'Laboratorio';
+ const out={...u,rol:role};
+ ['permissions','permisos','permissionMatrix','matrizPermisos','modules','modulosPermitidos','roleRules'].forEach(k=>delete out[k]);
+ return out;
+}
+function sanitizeUsers(rows){return (Array.isArray(rows)?rows:[]).map(sanitizeUser)}
+try{
+ const nativeLoad=loadERPUsers;
+ loadERPUsers=function(){const rows=sanitizeUsers(nativeLoad());try{localStorage.setItem(USERS_KEY,JSON.stringify(rows))}catch(_){}return rows};
+ window.loadERPUsers=loadERPUsers;
+}catch(_){}
+try{
+ saveERPUsers=function(rows){const cleanRows=sanitizeUsers(rows);localStorage.setItem(USERS_KEY,JSON.stringify(cleanRows));if(typeof window.erpCloudStage3Queue==='function')window.erpCloudStage3Queue('users');return cleanRows};
+ window.saveERPUsers=saveERPUsers;
+}catch(_){}
+
+function page(){return document.querySelector('.page.active')?.id||'dashboard'}
+function textOf(el){return clean([el?.textContent,el?.value,el?.title,el?.getAttribute?.('aria-label'),el?.getAttribute?.('onclick')].filter(Boolean).join(' '))}
+function isSignature(el){const t=textOf(el);return t.includes('firmar')||t.includes('openorderdigitalsignature')||t.includes('signorderwithp12')}
+function isReadControl(el){const t=textOf(el);return ['ver','detalle','buscar','filtrar','exportar','descargar','excel','pdf','imprimir','reporte','actualizar','recargar','volver','cerrar','cancelar'].some(x=>t.includes(x))}
+function isWriteControl(el){
+ if(isSignature(el))return true;
+ const t=textOf(el);if(isReadControl(el))return false;
+ return ['nuevo','nueva','crear','agregar','anadir','añadir','editar','eliminar','borrar','guardar','aprobar','rechazar','anular','recibir','ingresar','registrar','completar','adjudicar','restaurar','combinar','subir','sincronizar','consumir','dar de baja','ajuste','movimiento'].some(x=>t.includes(clean(x)));
+}
+function applyPermissions(root=document){
+ document.querySelectorAll('.nav button[data-page]').forEach(btn=>{
+  const allowed=permitted(btn.dataset.page,'view');btn.style.display=allowed?'':'none';btn.hidden=!allowed;
+ });
+ root.querySelectorAll?.('button,a.btn,input[type="button"],input[type="submit"]').forEach(el=>{
+  const mod=page();let allowed=true;
+  if(isSignature(el))allowed=permitted('ordenes','sign');
+  else if(isWriteControl(el))allowed=permitted(mod,'edit');
+  if(!allowed){el.style.display='none';el.hidden=true;el.dataset.v390Hidden='1'}
+  else if(el.dataset.v390Hidden==='1'){el.style.display='';el.hidden=false;delete el.dataset.v390Hidden}
+ });
+ const current=page();if(current&&!permitted(current,'view')&&current!=='dashboard'){try{go('dashboard')}catch(_){}}
+}
+try{applyPermissionUI=function(){applyPermissions(document)};window.applyPermissionUI=applyPermissionUI}catch(_){window.applyPermissionUI=()=>applyPermissions(document)}
+const oldGo=window.go;
+window.go=function(module){if(!permitted(module,'view'))return deny(module,'view');const result=oldGo?.apply(this,arguments);queueMicrotask(()=>applyPermissions(document));return result};
+try{go=window.go}catch(_){}
+
+document.addEventListener('click',function(e){
+ const el=e.target?.closest?.('button,a.btn,input[type="button"],input[type="submit"]');if(!el)return;
+ const mod=page();
+ if(isSignature(el)&&!permitted('ordenes','sign')){e.preventDefault();e.stopImmediatePropagation();deny('ordenes','sign');return}
+ if(isWriteControl(el)&&!permitted(mod,'edit')){e.preventDefault();e.stopImmediatePropagation();deny(mod,'edit')}
+},true);
+
+function fixRoleSelectors(){document.querySelectorAll('#usr_rol').forEach(sel=>{const current=normalizeRole(sel.value)||'Laboratorio';sel.innerHTML=OFFICIAL_ROLES.map(r=>`<option value="${r}" ${r===current?'selected':''}>${r}</option>`).join('')})}
+function updateMatrix(){
+ const host=document.getElementById('usuariosSeguridad');if(!host||activeRole()!=='Administrador')return;
+ const panels=[...host.querySelectorAll('.panel')];const panel=panels.find(p=>clean(p.textContent).includes('matriz'))||panels.at(-1);if(!panel)return;
+ panel.innerHTML=`<div class="ph"><h3>🔐 Matriz Enterprise de roles</h3><span class="badge ok">5 roles oficiales</span></div><div class="pb help"><p><b>Administrador:</b> acceso total, incluida administración de usuarios, auditoría, respaldo, diagnóstico y configuración.</p><p><b>Gerencia:</b> consulta, descarga e impresión de todos los módulos operativos; puede realizar Firma 1 y Firma 2 en Órdenes de Compra.</p><p><b>Calidad:</b> edición y operación completa en todos los módulos operativos; puede realizar Firma 1 y Firma 2. Sin acceso a usuarios, auditoría, respaldo ni diagnóstico.</p><p><b>Financiera:</b> edición completa en Facturas, Cuentas por Pagar y Registro de Pagos. El resto es consulta y descarga.</p><p><b>Laboratorio:</b> edición en Dashboard, Proveedores, Productos, Solicitudes, Cotizaciones, Órdenes de Compra, Recepción OC, Inventario Enterprise y Servicios Técnicos. El resto es consulta.</p><p style="margin-top:8px;color:var(--warn)"><b>Fuente de permisos:</b> la matriz está definida únicamente en esta versión del ERP. Firebase almacena de cada usuario su rol oficial, no una copia independiente de permisos.</p></div>`;
+}
+let pending=false;const observer=new MutationObserver(()=>{if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;fixRoleSelectors();applyPermissions(document);updateMatrix()})});observer.observe(document.documentElement,{subtree:true,childList:true});
+function boot(){document.querySelectorAll('.version').forEach(v=>v.textContent=VERSION);try{const rows=sanitizeUsers(JSON.parse(localStorage.getItem(USERS_KEY)||'[]'));if(rows.length)localStorage.setItem(USERS_KEY,JSON.stringify(rows))}catch(_){}fixRoleSelectors();applyPermissions(document);updateMatrix();try{window.populateLoginUsers?.()}catch(_){}}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot,500));else setTimeout(boot,500);
+})();
+</script>
+
 </body>
 
 <script>
@@ -18016,6 +18196,749 @@ document.addEventListener('change',e=>{if(e.target?.id==='inv37117Container'||e.
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(install,800));else setTimeout(install,800);
 })();
 </script>
+
+<script id="v392-users-firebase-no-loop">
+(function(){
+'use strict';
+
+const VERSION='V3.9.2 · USUARIOS FIREBASE SIN CICLO';
+const USERS_KEY='ERP_COMPRAS_USUARIOS_V3_0_8';
+const COLLECTION='erp_compras_empresa';
+const DOC='usuarios_roles';
+const CONFIG={
+  apiKey:'AIzaSyBR_MV4cQZakUPLTQrV6TWqMRX5mNHpf2k',
+  authDomain:'psi-inventarios2026.firebaseapp.com',
+  projectId:'psi-inventarios2026',
+  storageBucket:'psi-inventarios2026.firebasestorage.app',
+  messagingSenderId:'238951165415',
+  appId:'1:238951165415:web:689238fd00e258b607a142'
+};
+
+let syncing=false;
+let queued=false;
+let lastLog='';
+let lastLogAt=0;
+
+function normRole(v){
+  const r=String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+  if(r==='administrador'||r==='admin')return 'Administrador';
+  if(r==='gerencia')return 'Gerencia';
+  if(r==='calidad')return 'Calidad';
+  if(r==='financiera'||r==='contabilidad'||r==='finanzas'||r==='financiero')return 'Financiera';
+  if(r==='laboratorio'||r==='compras'||r==='bodega'||r==='consulta')return 'Laboratorio';
+  return 'Laboratorio';
+}
+
+function cleanUser(u){
+  if(!u||typeof u!=='object')return null;
+  const x={...u,rol:normRole(u.rol),estado:String(u.estado||'Activo')};
+  ['permissions','permisos','permissionMatrix','matrizPermisos','modules','modulosPermitidos','roleRules']
+    .forEach(k=>delete x[k]);
+  return x;
+}
+
+function userKey(u){
+  return String(u?.id||u?.correo||u?.email||'').trim().toLowerCase();
+}
+
+function readLocal(){
+  try{
+    const rows=JSON.parse(localStorage.getItem(USERS_KEY)||'[]');
+    return (Array.isArray(rows)?rows:[]).map(cleanUser).filter(Boolean);
+  }catch(_){
+    return [];
+  }
+}
+
+function mergeUsers(remote,local){
+  const map=new Map();
+  for(const raw of [...(Array.isArray(remote)?remote:[]),...(Array.isArray(local)?local:[])]){
+    const u=cleanUser(raw);
+    const k=userKey(u);
+    if(!u||!k)continue;
+
+    const old=map.get(k);
+    if(!old){
+      map.set(k,u);
+      continue;
+    }
+
+    const oldTime=Date.parse(old.updatedAt||old.createdAt||0)||0;
+    const newTime=Date.parse(u.updatedAt||u.createdAt||0)||0;
+    map.set(k,newTime>=oldTime?{...old,...u}:{...u,...old});
+  }
+  return [...map.values()].sort((a,b)=>userKey(a).localeCompare(userKey(b)));
+}
+
+function stableValue(value){
+  if(Array.isArray(value))return value.map(stableValue);
+  if(value&&typeof value==='object'){
+    const out={};
+    Object.keys(value).sort().forEach(k=>{out[k]=stableValue(value[k])});
+    return out;
+  }
+  return value;
+}
+
+function fingerprint(rows){
+  const clean=(Array.isArray(rows)?rows:[])
+    .map(cleanUser)
+    .filter(Boolean)
+    .sort((a,b)=>userKey(a).localeCompare(userKey(b)));
+  return JSON.stringify(stableValue(clean));
+}
+
+function db(){
+  if(!window.firebase)throw new Error('Firebase no disponible');
+  let app;
+  try{app=window.firebase.app('comprasEnterpriseV3')}
+  catch(_){app=window.firebase.initializeApp(CONFIG,'comprasEnterpriseV3')}
+  return app.firestore();
+}
+
+function logOnce(msg,minimumMs=5000){
+  const now=Date.now();
+  if(msg===lastLog && now-lastLogAt<minimumMs)return;
+  lastLog=msg;
+  lastLogAt=now;
+  try{
+    const el=document.getElementById('cloudSyncLog');
+    if(el){
+      const time=new Date().toLocaleTimeString('es-EC');
+      el.textContent=`[${time}] ${msg}\n`+el.textContent;
+    }
+  }catch(_){}
+}
+
+function refreshUserUI(){
+  try{window.populateLoginUsers?.()}catch(_){}
+  try{window.renderSecurityUsers?.()}catch(_){}
+}
+
+async function syncUsersNoLoop(){
+  if(syncing){
+    queued=true;
+    return readLocal();
+  }
+
+  syncing=true;
+  try{
+    const local=readLocal();
+    const fire=db();
+    const ref=fire.collection(COLLECTION).doc(DOC);
+
+    const result=await fire.runTransaction(async tx=>{
+      const snap=await tx.get(ref);
+      const data=snap.exists?snap.data():{};
+      const remote=Array.isArray(data.records)?data.records:[];
+      const combined=mergeUsers(remote,local);
+
+      if(!combined.length)throw new Error('No existen usuarios para sincronizar');
+
+      const remoteFingerprint=fingerprint(remote);
+      const combinedFingerprint=fingerprint(combined);
+      const changed=remoteFingerprint!==combinedFingerprint;
+
+      if(changed){
+        tx.set(ref,{
+          type:'users',
+          records:combined,
+          count:combined.length,
+          updatedAt:new Date().toISOString(),
+          version:'V3.9.2',
+          mode:'union-no-delete-no-loop'
+        },{merge:false});
+      }
+
+      return {
+        combined,
+        changed,
+        remoteCount:remote.length,
+        localCount:local.length
+      };
+    });
+
+    const before=fingerprint(readLocal());
+    const after=fingerprint(result.combined);
+
+    if(before!==after){
+      localStorage.setItem(USERS_KEY,JSON.stringify(result.combined));
+      refreshUserUI();
+    }
+
+    if(result.changed){
+      logOnce(`Usuarios Firebase actualizados: ${result.combined.length}.`,3000);
+    }else{
+      logOnce(`Usuarios Firebase verificados: ${result.combined.length}; sin cambios pendientes.`,15000);
+    }
+
+    return result.combined;
+  }catch(err){
+    console.warn('[V3.9.2 usuarios]',err);
+    logOnce('No se pudieron sincronizar usuarios: '+err.message,5000);
+    return readLocal();
+  }finally{
+    syncing=false;
+    if(queued){
+      queued=false;
+      clearTimeout(window.__v392UserTimer);
+      window.__v392UserTimer=setTimeout(syncUsersNoLoop,500);
+    }
+  }
+}
+
+function scheduleSync(delay=450){
+  clearTimeout(window.__v392UserTimer);
+  window.__v392UserTimer=setTimeout(syncUsersNoLoop,delay);
+}
+
+window.erpSyncUsersFirebaseOfficial=syncUsersNoLoop;
+
+const oldQueue=window.erpCloudStage3Queue;
+window.erpCloudStage3Queue=function(name){
+  if(name==='users'){
+    scheduleSync(450);
+    return;
+  }
+  return oldQueue?.apply(this,arguments);
+};
+try{erpCloudStage3Queue=window.erpCloudStage3Queue}catch(_){}
+
+window.saveERPUsers=function(rows){
+  const clean=(Array.isArray(rows)?rows:[]).map(cleanUser).filter(Boolean);
+  const previous=readLocal();
+
+  if(fingerprint(previous)!==fingerprint(clean)){
+    localStorage.setItem(USERS_KEY,JSON.stringify(clean));
+    scheduleSync(350);
+  }
+
+  return clean;
+};
+try{saveERPUsers=window.saveERPUsers}catch(_){}
+
+const oldRecover=window.cloudRecoverRemoteInitial;
+window.cloudRecoverRemoteInitial=async function(){
+  const result=await oldRecover?.apply(this,arguments);
+  await syncUsersNoLoop();
+  return result;
+};
+
+function boot(){
+  document.querySelectorAll('.version').forEach(v=>v.textContent=VERSION);
+  scheduleSync(700);
+}
+
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',boot,{once:true});
+}else{
+  boot();
+}
+})();
+</script>
+
+<script id="v393-orders-firebase-persistent-cache">
+(function(){
+'use strict';
+
+const VERSION='V3.9.3 · ÓRDENES FIREBASE PERSISTENTES';
+const ORDERS_KEY_SAFE='ERP_COMPRAS_ORDENES_COMPRA_V2_6';
+const FIREBASE_CFG_KEY='ERP_COMPRAS_FIREBASE_ETAPA1_CONFIG';
+const DB_NAME='ERP_COMPRAS_ENTERPRISE_CACHE_V393';
+const STORE_NAME='modules';
+const RECORD_KEY='orders';
+const COLLECTION='erp_compras_empresa';
+const DOC_ORDERS='ordenes_compra';
+const FIREBASE_CONFIG={
+  apiKey:'AIzaSyBR_MV4cQZakUPLTQrV6TWqMRX5mNHpf2k',
+  authDomain:'psi-inventarios2026.firebaseapp.com',
+  projectId:'psi-inventarios2026',
+  storageBucket:'psi-inventarios2026.firebasestorage.app',
+  messagingSenderId:'238951165415',
+  appId:'1:238951165415:web:689238fd00e258b607a142'
+};
+
+let restoring=false;
+let lastSavedFingerprint='';
+
+function fingerprint(rows){
+  try{
+    return JSON.stringify((Array.isArray(rows)?rows:[])
+      .map(x=>({id:String(x?.id||''),updatedAt:String(x?.updatedAt||x?.createdAt||'')}))
+      .sort((a,b)=>a.id.localeCompare(b.id)));
+  }catch(_){
+    return '';
+  }
+}
+
+function openDb(){
+  return new Promise((resolve,reject)=>{
+    if(!window.indexedDB){
+      reject(new Error('IndexedDB no disponible'));
+      return;
+    }
+    const request=indexedDB.open(DB_NAME,1);
+    request.onupgradeneeded=()=>{
+      const db=request.result;
+      if(!db.objectStoreNames.contains(STORE_NAME)){
+        db.createObjectStore(STORE_NAME,{keyPath:'key'});
+      }
+    };
+    request.onsuccess=()=>resolve(request.result);
+    request.onerror=()=>reject(request.error||new Error('No se pudo abrir IndexedDB'));
+  });
+}
+
+async function saveOrdersIndexedDb(rows){
+  const clean=Array.isArray(rows)?rows:[];
+  const fp=fingerprint(clean);
+  if(fp && fp===lastSavedFingerprint)return;
+  const db=await openDb();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction(STORE_NAME,'readwrite');
+    tx.objectStore(STORE_NAME).put({
+      key:RECORD_KEY,
+      records:clean,
+      count:clean.length,
+      savedAt:new Date().toISOString()
+    });
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error||new Error('No se pudo guardar OC en IndexedDB'));
+    tx.onabort=()=>reject(tx.error||new Error('Guardado OC cancelado'));
+  });
+  db.close();
+  lastSavedFingerprint=fp;
+}
+
+async function loadOrdersIndexedDb(){
+  const db=await openDb();
+  const result=await new Promise((resolve,reject)=>{
+    const tx=db.transaction(STORE_NAME,'readonly');
+    const req=tx.objectStore(STORE_NAME).get(RECORD_KEY);
+    req.onsuccess=()=>resolve(req.result||null);
+    req.onerror=()=>reject(req.error||new Error('No se pudo leer OC de IndexedDB'));
+  });
+  db.close();
+  return Array.isArray(result?.records)?result.records:[];
+}
+
+function writeLocalOrders(rows){
+  try{
+    localStorage.setItem(ORDERS_KEY_SAFE,JSON.stringify(rows));
+    const verify=JSON.parse(localStorage.getItem(ORDERS_KEY_SAFE)||'[]');
+    return Array.isArray(verify)&&verify.length===rows.length;
+  }catch(err){
+    console.warn('[V3.9.3] localStorage sin capacidad para OC; se usará IndexedDB.',err);
+    return false;
+  }
+}
+
+function clearOrdersAppliedMarker(){
+  try{
+    const cfg=JSON.parse(localStorage.getItem(FIREBASE_CFG_KEY)||'{}')||{};
+    if(cfg.ordersAppliedAt){
+      delete cfg.ordersAppliedAt;
+      localStorage.setItem(FIREBASE_CFG_KEY,JSON.stringify(cfg));
+    }
+  }catch(_){}
+}
+
+function refreshUi(){
+  try{renderAll()}catch(_){}
+  try{renderOrders()}catch(_){}
+  try{cloudRefreshPanel()}catch(_){}
+}
+
+function cloudLog(message){
+  try{
+    const el=document.getElementById('cloudSyncLog');
+    if(el){
+      const line='['+new Date().toLocaleTimeString('es-EC')+'] '+message;
+      if(!el.textContent.includes(message))el.textContent=line+'\n'+el.textContent;
+    }
+  }catch(_){}
+}
+
+function getFirebaseDb(){
+  if(!window.firebase)throw new Error('Firebase no disponible');
+  let app;
+  try{app=window.firebase.app('comprasEnterpriseV3')}
+  catch(_){app=window.firebase.initializeApp(FIREBASE_CONFIG,'comprasEnterpriseV3')}
+  return window.firebase.firestore(app);
+}
+
+function restoreNested(value){
+  if(Array.isArray(value))return value.map(restoreNested);
+  if(value&&typeof value==='object'){
+    if(value.__erpNestedArray===true&&value.values&&typeof value.values==='object'){
+      const length=Math.max(0,Number(value.length)||0);
+      return Array.from({length},(_,i)=>restoreNested(value.values[String(i)]));
+    }
+    const out={};
+    Object.keys(value).forEach(k=>{out[k]=restoreNested(value[k])});
+    return out;
+  }
+  return value;
+}
+
+async function fetchOrdersFromFirebase(){
+  const snap=await getFirebaseDb().collection(COLLECTION).doc(DOC_ORDERS).get();
+  if(!snap.exists)return [];
+  const data=snap.data()||{};
+  return Array.isArray(data.records)?data.records.map(restoreNested):[];
+}
+
+async function establishOrders(rows,source){
+  if(!Array.isArray(rows)||!rows.length)return false;
+
+  orders=rows;
+  writeLocalOrders(rows);
+  await saveOrdersIndexedDb(rows);
+  clearOrdersAppliedMarker();
+  refreshUi();
+  cloudLog('Órdenes de Compra persistentes: '+rows.length+' cargadas desde '+source+'.');
+  return true;
+}
+
+async function restoreOrdersAtStartup(){
+  if(restoring)return;
+  restoring=true;
+  try{
+    if(Array.isArray(orders)&&orders.length){
+      await saveOrdersIndexedDb(orders);
+      return;
+    }
+
+    const cached=await loadOrdersIndexedDb().catch(()=>[]);
+    if(cached.length){
+      await establishOrders(cached,'caché permanente de esta computadora');
+      return;
+    }
+
+    const remote=await fetchOrdersFromFirebase();
+    if(remote.length){
+      await establishOrders(remote,'Firebase');
+    }
+  }catch(err){
+    console.warn('[V3.9.3] Restauración automática de OC',err);
+    cloudLog('No se pudieron restaurar automáticamente las OC: '+(err?.message||err));
+  }finally{
+    restoring=false;
+  }
+}
+
+/* Cada cambio real de OC queda además en IndexedDB, no solo en localStorage. */
+const originalPersistOrders=window.persistOrders || (typeof persistOrders==='function'?persistOrders:null);
+window.persistOrders=function(){
+  const result=originalPersistOrders?.apply(this,arguments);
+  Promise.resolve(saveOrdersIndexedDb(Array.isArray(orders)?orders:[]))
+    .catch(err=>console.warn('[V3.9.3] Copia permanente OC',err));
+  return result;
+};
+try{persistOrders=window.persistOrders}catch(_){}
+
+/* Después de recuperar toda la base, verifica y fija las OC en almacenamiento persistente. */
+const originalRecover=window.cloudRecoverRemoteInitial;
+window.cloudRecoverRemoteInitial=async function(){
+  const result=await originalRecover?.apply(this,arguments);
+  try{
+    if(Array.isArray(orders)&&orders.length){
+      await establishOrders(orders,'recuperación general de Firebase');
+    }else{
+      const remote=await fetchOrdersFromFirebase();
+      if(remote.length)await establishOrders(remote,'Firebase');
+    }
+  }catch(err){
+    console.warn('[V3.9.3] Verificación posterior a recuperación',err);
+  }
+  return result;
+};
+
+/* Herramienta explícita para recuperar solo OC, sin tocar ningún otro módulo. */
+window.erpRecoverOrdersOnly=async function(){
+  if(restoring)return;
+  restoring=true;
+  try{
+    const remote=await fetchOrdersFromFirebase();
+    if(!remote.length){
+      toast?.('Firebase no contiene Órdenes de Compra.');
+      return false;
+    }
+    await establishOrders(remote,'Firebase');
+    toast?.('Órdenes de Compra recuperadas y guardadas: '+remote.length);
+    return true;
+  }catch(err){
+    toast?.('No se pudieron recuperar las OC: '+(err?.message||err));
+    return false;
+  }finally{
+    restoring=false;
+  }
+};
+
+function addOrdersOnlyButton(){
+  const actions=document.querySelector('.cloud-sync-actions');
+  if(!actions||actions.querySelector('#recoverOrdersOnlyBtn'))return;
+  const button=document.createElement('button');
+  button.id='recoverOrdersOnlyBtn';
+  button.className='btn blue';
+  button.textContent='🧾 Recuperar solo Órdenes de Compra';
+  button.onclick=window.erpRecoverOrdersOnly;
+  actions.appendChild(button);
+}
+
+function boot(){
+  document.querySelectorAll('.version').forEach(v=>v.textContent=VERSION);
+  addOrdersOnlyButton();
+  setTimeout(addOrdersOnlyButton,700);
+  setTimeout(restoreOrdersAtStartup,900);
+}
+
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',boot,{once:true});
+}else{
+  boot();
+}
+})();
+</script>
+
+
+<script id="v394-inventory-button-version">
+(function(){
+  const VERSION='V3.9.4 · BOTÓN INVENTARIO VISIBLE';
+  function apply(){
+    document.querySelectorAll('.version').forEach(el=>el.textContent=VERSION);
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',apply,{once:true});
+  }else{
+    apply();
+  }
+})();
+</script>
+
+
+<script id="v395-inventory-enterprise-menu-permission-fix">
+(function(){
+'use strict';
+
+const VERSION='V3.9.5 · INVENTARIO ENTERPRISE VISIBLE';
+
+function currentRole(){
+  try{
+    const user=typeof window.currentERPUser==='function'?window.currentERPUser():null;
+    return String(user?.rol||'');
+  }catch(_){
+    return '';
+  }
+}
+
+function ensureInventoryEnterpriseMenu(){
+  try{
+    if(typeof window.invEEnsureDOM==='function')window.invEEnsureDOM();
+  }catch(_){}
+
+  const nav=document.querySelector('.nav');
+  if(!nav)return;
+
+  let button=nav.querySelector('[data-page="inventarioEnterprise"]');
+
+  if(!button){
+    button=document.createElement('button');
+    button.dataset.page='inventarioEnterprise';
+    button.innerHTML='🏭 Inventario Enterprise';
+    button.onclick=()=>window.go('inventarioEnterprise');
+
+    const reception=nav.querySelector('[data-page="recepcion"]');
+    if(reception)reception.insertAdjacentElement('afterend',button);
+    else nav.appendChild(button);
+  }
+
+  button.style.display='';
+  button.hidden=false;
+  button.removeAttribute('aria-hidden');
+
+  // Se deja un solo acceso visible al inventario para evitar duplicados/confusión.
+  ['ingresoInventario','lotesInventario','kardexIntegrado'].forEach(page=>{
+    const old=nav.querySelector('[data-page="'+page+'"]');
+    if(old)old.style.display='none';
+  });
+}
+
+const originalHasPermission=window.hasPermission;
+window.hasPermission=function(module,action='view'){
+  if(module==='inventarioEnterprise'){
+    const role=currentRole();
+    if(!role)return false;
+
+    if(action==='view'||action==='ver'||action==='read')return true;
+    return ['Administrador','Calidad','Laboratorio'].includes(role);
+  }
+
+  return originalHasPermission
+    ? originalHasPermission(module,action)
+    : true;
+};
+try{hasPermission=window.hasPermission}catch(_){}
+
+const originalRequirePermission=window.requirePermission;
+window.requirePermission=function(module,action='view'){
+  if(module==='inventarioEnterprise'){
+    const allowed=window.hasPermission(module,action);
+    if(!allowed){
+      try{window.toast?.('Este perfil tiene acceso de solo consulta en Inventario Enterprise')}catch(_){}
+    }
+    return allowed;
+  }
+
+  return originalRequirePermission
+    ? originalRequirePermission(module,action)
+    : window.hasPermission(module,action);
+};
+try{requirePermission=window.requirePermission}catch(_){}
+
+const originalApplyPermissionUI=window.applyPermissionUI;
+window.applyPermissionUI=function(){
+  try{originalApplyPermissionUI?.()}catch(_){}
+  ensureInventoryEnterpriseMenu();
+};
+
+const originalGo=window.go;
+window.go=function(page){
+  if(page==='inventarioEnterprise'){
+    if(!window.hasPermission('inventarioEnterprise','view')){
+      try{window.toast?.('No tiene permiso para acceder a Inventario Enterprise')}catch(_){}
+      return;
+    }
+
+    ensureInventoryEnterpriseMenu();
+
+    document.querySelectorAll('.nav button').forEach(btn=>{
+      btn.classList.toggle('active',btn.dataset.page===page);
+    });
+
+    document.querySelectorAll('.page').forEach(p=>{
+      p.classList.toggle('active',p.id===page);
+    });
+
+    const title=document.getElementById('pageTitle');
+    const subtitle=document.getElementById('pageSubtitle');
+
+    if(title)title.textContent='Inventario Enterprise';
+    if(subtitle)subtitle.textContent='Inventario oficial integrado · existencias, lotes, movimientos y recepciones.';
+
+    try{window.invERender?.()}catch(_){}
+    return;
+  }
+
+  return originalGo?.apply(this,arguments);
+};
+try{go=window.go}catch(_){}
+
+function boot(){
+  document.querySelectorAll('.version').forEach(el=>el.textContent=VERSION);
+  ensureInventoryEnterpriseMenu();
+
+  // Reaplica tras login, sincronización y rerender de navegación.
+  let attempts=0;
+  const timer=setInterval(()=>{
+    ensureInventoryEnterpriseMenu();
+    attempts++;
+    if(attempts>=12)clearInterval(timer);
+  },500);
+}
+
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',boot,{once:true});
+}else{
+  boot();
+}
+})();
+</script>
+
+
+<script id="v397-inventory-menu-stable">
+(function(){
+'use strict';
+
+const VERSION='V3.9.7 · SINCRONIZACIÓN ESTABLE';
+
+function ensureInventoryButton(){
+  const nav=document.querySelector('aside.sidebar nav.nav, aside.sidebar .nav, nav.nav');
+  if(!nav)return;
+
+  try{window.invEEnsureDOM?.()}catch(_){}
+
+  let btn=nav.querySelector('[data-page="inventarioEnterprise"]');
+  if(!btn){
+    btn=document.createElement('button');
+    btn.type='button';
+    btn.dataset.page='inventarioEnterprise';
+    btn.innerHTML='🏭 Inventario Enterprise';
+    btn.onclick=()=>window.go?.('inventarioEnterprise');
+
+    const reception=nav.querySelector('[data-page="recepcion"]');
+    reception ? reception.insertAdjacentElement('afterend',btn) : nav.appendChild(btn);
+  }
+
+  btn.hidden=false;
+  btn.style.display='';
+  btn.style.visibility='visible';
+  btn.style.opacity='1';
+  btn.disabled=false;
+}
+
+function boot(){
+  document.querySelectorAll('.version').forEach(el=>el.textContent=VERSION);
+
+  [0,300,800,1500,3000,6000].forEach(ms=>{
+    setTimeout(ensureInventoryButton,ms);
+  });
+
+  document.addEventListener('click',event=>{
+    if(event.target.closest('#currentUserChip,.login-card,.cloud-sync-modal')){
+      setTimeout(ensureInventoryButton,300);
+    }
+  });
+}
+
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',boot,{once:true});
+}else{
+  boot();
+}
+})();
+</script>
+
+
+<script id="v397-sync-status-clarification">
+(function(){
+  function apply(){
+    const badge=document.getElementById('cloudSyncBadge');
+    if(!badge)return;
+    badge.title='Estado de sincronización del Inventario Enterprise. El indicador ERP EN LÍNEA corresponde a la conexión general.';
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',apply,{once:true});
+  else apply();
+})();
+</script>
+
+
+<script id="v398-central-role-inventory-fix-version">
+(function(){
+  const label='V3.9.8 · INVENTARIO ENTERPRISE RESTAURADO';
+  function apply(){
+    document.querySelectorAll('.version').forEach(el=>el.textContent=label);
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>{
+      [1000,3000,6000].forEach(ms=>setTimeout(apply,ms));
+    },{once:true});
+  }else{
+    [0,1000,3000].forEach(ms=>setTimeout(apply,ms));
+  }
+})();
+</script>
+
 </html>
 
 <!-- OPCION AGREGADA SUGERIDA: <option value="Insumo">Insumo</option> -->
@@ -20399,88 +21322,49 @@ setTimeout(install,1000);
 })();
 </script>
 
-<script id="v37108-login-admin-fixed-final">
+
+<script id="v3824-login-selection-stable">
 (function(){
 'use strict';
-const ADMIN_ID='usr_admin_default';
-const USERS_KEY='ERP_COMPRAS_USUARIOS_V3_0_8';
-
-function ensureAdminOption(){
-  const sel=document.getElementById('loginUser');
-  if(!sel)return false;
-  let option=Array.from(sel.options).find(o=>String(o.value)===ADMIN_ID);
-  if(!option){
-    try{
-      const users=JSON.parse(localStorage.getItem(USERS_KEY)||'[]');
-      const admin=Array.isArray(users)?users.find(u=>String(u?.id||'')===ADMIN_ID):null;
-      option=document.createElement('option');
-      option.value=ADMIN_ID;
-      option.textContent=(admin?.nombre||'Administrador ERP')+' · '+(admin?.rol||'Administrador');
-      sel.insertBefore(option,sel.firstChild);
-    }catch(_){
-      option=document.createElement('option');
-      option.value=ADMIN_ID;
-      option.textContent='Administrador ERP · Administrador';
-      sel.insertBefore(option,sel.firstChild);
-    }
+const VERSION='V3.8.2.4 · USUARIOS FIREBASE · SELECTOR ESTABLE';
+let chosenUserId='';
+function sel(){return document.getElementById('loginUser')}
+function remember(){const s=sel();if(s&&s.value)chosenUserId=String(s.value)}
+function restore(){
+  const s=sel();if(!s)return;
+  if(chosenUserId&&Array.from(s.options).some(o=>String(o.value)===chosenUserId))s.value=chosenUserId;
+}
+function install(){
+  const s=sel();
+  if(s&&!s.dataset.v3824Stable){
+    s.dataset.v3824Stable='1';
+    s.addEventListener('change',remember);
+    s.addEventListener('input',remember);
+    new MutationObserver(()=>requestAnimationFrame(restore)).observe(s,{childList:true,subtree:true});
   }
-  if(sel.value!==ADMIN_ID)sel.value=ADMIN_ID;
-  return sel.value===ADMIN_ID;
+  document.querySelectorAll('.version').forEach(v=>v.textContent=VERSION);
+  restore();
 }
-
-function lockDefaultWhileLoginVisible(){
-  const overlay=document.getElementById('loginOverlay');
-  if(!overlay?.classList.contains('open'))return;
-  ensureAdminOption();
-}
-
-/* Toda reconstrucción del listado termina inmediatamente en Administrador. */
 const originalPopulate=window.populateLoginUsers;
 window.populateLoginUsers=function(){
+  remember();
   const result=typeof originalPopulate==='function'?originalPopulate.apply(this,arguments):undefined;
-  ensureAdminOption();
+  restore();
+  requestAnimationFrame(restore);
   return result;
 };
-
-/* Toda apertura o cierre de sesión vuelve a Administrador, sin recordar al usuario anterior. */
-const previousShowLogin=window.showLogin;
+const originalShowLogin=window.showLogin;
 window.showLogin=function(){
-  const result=typeof previousShowLogin==='function'?previousShowLogin.apply(this,arguments):undefined;
-  ensureAdminOption();
-  requestAnimationFrame(ensureAdminOption);
+  const result=typeof originalShowLogin==='function'?originalShowLogin.apply(this,arguments):undefined;
+  setTimeout(restore,0);
   return result;
 };
-
-const previousLogout=window.logoutERP;
-window.logoutERP=function(){
-  const result=typeof previousLogout==='function'?previousLogout.apply(this,arguments):undefined;
-  ensureAdminOption();
-  return result;
-};
-
-function install(){
-  const overlay=document.getElementById('loginOverlay');
-  const sel=document.getElementById('loginUser');
-  ensureAdminOption();
-
-  if(sel&&!sel.dataset.v37108Locked){
-    sel.dataset.v37108Locked='1';
-    new MutationObserver(()=>lockDefaultWhileLoginVisible()).observe(sel,{childList:true,subtree:true});
-  }
-  if(overlay&&!overlay.dataset.v37108Locked){
-    overlay.dataset.v37108Locked='1';
-    new MutationObserver(()=>lockDefaultWhileLoginVisible()).observe(overlay,{attributes:true,attributeFilter:['class']});
-  }
-  document.querySelectorAll('.version').forEach(v=>v.textContent='V3.7.10.8 · ADMINISTRADOR FIJO EN ACCESO');
-}
-
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',install,{once:true});
-else install();
-setTimeout(install,250);
-setTimeout(install,1200);
-setInterval(lockDefaultWhileLoginVisible,500);
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',install,{once:true});else install();
+setTimeout(install,500);
+setTimeout(install,1800);
 })();
 </script>
+
 
 
 <!-- V3.7.11.2.1 · CORRECCIÓN DE RENDER + CONSUMO DE SÓLIDOS -->
@@ -20849,15 +21733,15 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 <script id="v382-roles-oficiales-seguridad-final">
 (function(){
 'use strict';
-const VERSION='V3.8.2.2 · FIRMAS SOLO GERENCIA Y CALIDAD';
+const VERSION='V3.8.2.3 · USUARIOS GLOBALES FIREBASE';
 const USERS_KEY='ERP_COMPRAS_USUARIOS_V3_0_8';
 const SESSION_KEY='ERP_COMPRAS_SESION_V3_0_8';
 const MIGRATION_KEY='ERP_V382_ROLES_MIGRADOS';
 const OFFICIAL_ROLES=['Administrador','Gerencia','Calidad','Financiera','Laboratorio'];
 const SENSITIVE=new Set(['usuariosSeguridad','operacionSegura','auditoria','control']);
-const ALL_MODULES=new Set(['dashboard','proveedores','productos','solicitudes','cotizaciones','ordenes','recepcion','ingresoInventario','lotesInventario','kardexIntegrado','serviciosTecnicos','facturas','cuentasPagar','pagos','evaluacionProveedores','alertas','dashboardCorporativo','aprobaciones']);
+const ALL_MODULES=new Set(['dashboard','proveedores','productos','solicitudes','cotizaciones','ordenes','recepcion','ingresoInventario','lotesInventario','kardexIntegrado','inventarioEnterprise','serviciosTecnicos','facturas','cuentasPagar','pagos','evaluacionProveedores','alertas','dashboardCorporativo','aprobaciones']);
 const FINANCE_EDIT=new Set(['facturas','cuentasPagar','pagos']);
-const LAB_EDIT=new Set(['dashboard','proveedores','productos','solicitudes','cotizaciones','ordenes','recepcion','ingresoInventario','lotesInventario','kardexIntegrado','serviciosTecnicos']);
+const LAB_EDIT=new Set(['dashboard','proveedores','productos','solicitudes','cotizaciones','ordenes','recepcion','ingresoInventario','lotesInventario','kardexIntegrado','inventarioEnterprise','serviciosTecnicos']);
 const READ_ACTIONS=['view','ver','read','consultar','detalle','details','export','exportar','download','descargar','print','imprimir','report','reporte','excel','pdf','filter','filtrar','search','buscar','refresh','actualizar'];
 const WRITE_WORDS=['nuevo','nueva','crear','agregar','añadir','anadir','editar','eliminar','borrar','guardar','aprobar','rechazar','anular','recibir','ingresar','registrar','completar','adjudicar','restaurar','combinar','subir','sincronizar','consumir','dar de baja','ajuste','movimiento','firmar aprobación','firmar autorizacion','firmar autorización','firmar con certificado'];
 const READ_WORDS=['ver','detalle','consultar','buscar','filtrar','exportar','descargar','excel','pdf','imprimir','reporte','actualizar','recargar','volver','cerrar','cancelar'];
@@ -20937,18 +21821,62 @@ window.saveERPUser=async function(id=''){
   const sel=document.getElementById('usr_rol');if(sel&&!OFFICIAL_ROLES.includes(sel.value)){window.toast?.('Seleccione uno de los cinco roles oficiales');return}
   return oldSave?.(id);
 };
-function adminOnlyMigration(){
-  if(localStorage.getItem(MIGRATION_KEY)==='1')return;
-  let rows=[];try{rows=JSON.parse(localStorage.getItem(USERS_KEY)||'[]')}catch(_){}
-  const existing=Array.isArray(rows)?rows.find(u=>u?.rol==='Administrador'||u?.id==='usr_admin_default'):null;
-  const now=new Date().toISOString();
-  const admin=existing?{...existing,rol:'Administrador',estado:'Activo',nombre:existing.nombre||'Administrador ERP',correo:existing.correo||'admin@psi.local',updatedAt:now}:{id:'usr_admin_default',nombre:'Administrador ERP',correo:'admin@psi.local',area:'Administración',cargo:'Administrador',rol:'Administrador',estado:'Activo',password:'admin123',mustChangePassword:true,createdAt:now,updatedAt:now};
-  localStorage.setItem(USERS_KEY,JSON.stringify([admin]));
-  try{const s=JSON.parse(sessionStorage.getItem(SESSION_KEY)||'null');if(s?.userId!==admin.id)sessionStorage.removeItem(SESSION_KEY)}catch(_){sessionStorage.removeItem(SESSION_KEY)}
-  try{const s=JSON.parse(localStorage.getItem(SESSION_KEY)||'null');if(s?.userId!==admin.id)localStorage.removeItem(SESSION_KEY)}catch(_){localStorage.removeItem(SESSION_KEY)}
-  localStorage.setItem(MIGRATION_KEY,'1');
-  try{window.erpCloudStage3Queue?.('users')}catch(_){}
-  try{window.populateLoginUsers?.();window.renderSecurityUsers?.()}catch(_){}
+/* V3.8.2.3 · El Centro de Usuarios es global y Firebase es la fuente oficial.
+   Nunca se vuelve a vaciar la lista por navegador ni se reemplaza la nube con
+   un único Administrador durante el arranque. */
+function normalizeOfficialUser(u){
+  if(!u||typeof u!=='object')return null;
+  const roleMap={Contabilidad:'Financiera',Finanzas:'Financiera',Compras:'Laboratorio',Consulta:'Laboratorio',Bodega:'Laboratorio'};
+  const mapped=roleMap[String(u.rol||'')]||String(u.rol||'Laboratorio');
+  return {...u,rol:OFFICIAL_ROLES.includes(mapped)?mapped:'Laboratorio',estado:String(u.estado||'Activo')};
+}
+function localOfficialUsers(){
+  try{return (JSON.parse(localStorage.getItem(USERS_KEY)||'[]')||[]).map(normalizeOfficialUser).filter(Boolean)}catch(_){return []}
+}
+function userKey(u){return String(u?.id||u?.correo||'').trim().toLowerCase()}
+function mergeUsers(remote,local){
+  const map=new Map();
+  [...(Array.isArray(remote)?remote:[]),...(Array.isArray(local)?local:[])].map(normalizeOfficialUser).filter(Boolean).forEach(u=>{
+    const k=userKey(u);if(!k)return;
+    const prev=map.get(k);
+    if(!prev){map.set(k,u);return}
+    const pt=Date.parse(prev.updatedAt||prev.createdAt||0)||0,nt=Date.parse(u.updatedAt||u.createdAt||0)||0;
+    map.set(k,nt>=pt?{...prev,...u}:{...u,...prev});
+  });
+  return [...map.values()];
+}
+function defaultAdmin(){const now=new Date().toISOString();return {id:'usr_admin_default',nombre:'Administrador ERP',correo:'admin@psi.local',area:'Administración',cargo:'Administrador',rol:'Administrador',estado:'Activo',password:'admin123',mustChangePassword:true,createdAt:now,updatedAt:now}}
+function firebaseUsersDb(){
+  if(!window.firebase)throw new Error('Firebase no disponible');
+  const cfg={apiKey:'AIzaSyBR_MV4cQZakUPLTQrV6TWqMRX5mNHpf2k',authDomain:'psi-inventarios2026.firebaseapp.com',projectId:'psi-inventarios2026',storageBucket:'psi-inventarios2026.firebasestorage.app',messagingSenderId:'238951165415',appId:'1:238951165415:web:689238fd00e258b607a142'};
+  let app;try{app=window.firebase.app('comprasEnterpriseV3')}catch(_){app=window.firebase.initializeApp(cfg,'comprasEnterpriseV3')}
+  return app.firestore();
+}
+async function reconcileUsersWithFirebase(){
+  const local=localOfficialUsers();
+  try{
+    const ref=firebaseUsersDb().collection('erp_compras_empresa').doc('usuarios_roles');
+    const snap=await ref.get();
+    const data=snap.exists?snap.data():{};
+    const remote=Array.isArray(data?.records)?data.records:[];
+    let merged=mergeUsers(remote,local);
+    if(!merged.length)merged=[defaultAdmin()];
+    localStorage.setItem(USERS_KEY,JSON.stringify(merged));
+    const remoteKeys=new Set(remote.map(userKey)),mergedKeys=new Set(merged.map(userKey));
+    const cloudNeedsUpdate=!snap.exists||remote.length!==merged.length||[...mergedKeys].some(k=>!remoteKeys.has(k));
+    if(cloudNeedsUpdate){
+      await ref.set({type:'users',records:merged,count:merged.length,updatedAt:new Date().toISOString(),updatedBy:localStorage.getItem('ERP_COMPRAS_FIREBASE_DEVICE_ID')||'v3823',version:'V3.8.2.3'});
+    }
+    localStorage.setItem(MIGRATION_KEY,'firebase-global-v3823');
+    try{window.populateLoginUsers?.();window.renderSecurityUsers?.()}catch(_){}
+    try{window.toast?.('Usuarios sincronizados con Firebase: '+merged.length)}catch(_){}
+    return merged;
+  }catch(err){
+    console.warn('[V3.8.2.3 usuarios Firebase]',err);
+    if(!local.length){const rows=[defaultAdmin()];localStorage.setItem(USERS_KEY,JSON.stringify(rows))}
+    try{window.populateLoginUsers?.();window.renderSecurityUsers?.()}catch(_){}
+    return localOfficialUsers();
+  }
 }
 function improveMatrix(){
   const el=document.getElementById('usuariosSeguridad');if(!el||role()!=='Administrador')return;
@@ -20966,7 +21894,7 @@ const observer=new MutationObserver(()=>{
   requestAnimationFrame(()=>{v382UiPending=false;applyUI(document);improveMatrix()});
 });
 observer.observe(document.documentElement,{childList:true,subtree:true});
-function boot(){document.querySelectorAll('.version').forEach(v=>v.textContent=VERSION);adminOnlyMigration();applyUI(document);setTimeout(()=>{applyUI(document);window.renderSecurityUsers?.()},1200)}
+function boot(){document.querySelectorAll('.version').forEach(v=>v.textContent=VERSION);applyUI(document);setTimeout(async()=>{await reconcileUsersWithFirebase();applyUI(document);window.renderSecurityUsers?.()},700)}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot,250));else setTimeout(boot,250);
 })();
 </script>
