@@ -17412,7 +17412,13 @@ try{go=window.go}catch(_){}
 document.addEventListener('click',function(e){
  const el=e.target?.closest?.('button,a.btn,input[type="button"],input[type="submit"]');if(!el)return;
  const mod=page();
- if(isSignature(el)&&!permitted('ordenes','sign')){e.preventDefault();e.stopImmediatePropagation();deny('ordenes','sign');return}
+ /* Una firma autorizada no debe caer después en el bloqueo de edición de Gerencia. */
+ if(isSignature(el)){
+   if(!permitted('ordenes','sign')){
+     e.preventDefault();e.stopImmediatePropagation();deny('ordenes','sign');
+   }
+   return;
+ }
  if(isWriteControl(el)&&!permitted(mod,'edit')){e.preventDefault();e.stopImmediatePropagation();deny(mod,'edit')}
 },true);
 
@@ -17428,6 +17434,20 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 })();
 </script>
 
+
+<script id="v3916-firma-gerencia-fix">
+(function(){
+'use strict';
+const VERSION='V3.9.16 · FIRMA GERENCIA CORREGIDA';
+function applyVersion(){
+  document.querySelectorAll('.version').forEach(v=>v.textContent=VERSION);
+  const status=document.getElementById('statusText');
+  if(status)status.textContent='Firma 1 y Firma 2 habilitadas para Administrador, Gerencia y Calidad';
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(applyVersion,1200));
+else setTimeout(applyVersion,1200);
+})();
+</script>
 </body>
 
 <script>
@@ -22249,7 +22269,18 @@ function applyUI(root=document){
 }
 document.addEventListener('click',function(e){
   const el=e.target?.closest?.('button,a.btn,input[type="button"],input[type="submit"]');if(!el)return;
-  const p=activePage();if(buttonIsSignature(el)&&!canSignOrders()){e.preventDefault();e.stopImmediatePropagation();try{window.toast?.('Solo Gerencia y Calidad pueden firmar documentos')}catch(_){};return}if(role()!=='Administrador'&&buttonIsWrite(el)&&!allowed(p,'edit')){e.preventDefault();e.stopImmediatePropagation();deny(p)}
+  const p=activePage();
+  /* Las firmas se validan por permiso de firma, no por permiso general de edición. */
+  if(buttonIsSignature(el)){
+    if(!canSignOrders()){
+      e.preventDefault();e.stopImmediatePropagation();
+      try{window.toast?.('Solo Administrador, Gerencia y Calidad pueden firmar documentos')}catch(_){}
+    }
+    return;
+  }
+  if(role()!=='Administrador'&&buttonIsWrite(el)&&!allowed(p,'edit')){
+    e.preventDefault();e.stopImmediatePropagation();deny(p);
+  }
 },true);
 const originalOpenOrderDigitalSignature=window.openOrderDigitalSignature;
 window.openOrderDigitalSignature=function(){
