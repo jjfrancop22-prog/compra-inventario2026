@@ -9359,7 +9359,12 @@ function completeAccess(user,sid){
   writeGlobalSession(user,sid,'Activa');
 }
 function showMandatoryChange(user){
-  pendingFirstLoginUserId=user.id;document.getElementById('v3712ForceOverlay')?.classList.add('open');
+  pendingFirstLoginUserId=user.id;
+  const overlay=document.getElementById('v3712ForceOverlay');
+  if(overlay){
+    overlay.dataset.pendingUserId=user.id;
+    overlay.classList.add('open');
+  }
   setTimeout(()=>document.getElementById('v3712NewPassword')?.focus(),50);
 }
 window.v3712UpdateStrength=function(){
@@ -9368,15 +9373,82 @@ window.v3712UpdateStrength=function(){
   const bar=document.getElementById('v3712StrengthBar');if(!bar)return;bar.style.width=(score*20)+'%';bar.style.background=score<3?'var(--danger)':score<5?'var(--warn)':'var(--green)';
 };
 window.v3712SaveMandatoryPassword=async function(){
-  const p=txt(document.getElementById('v3712NewPassword')?.value),c=txt(document.getElementById('v3712ConfirmPassword')?.value);
-  if(!passwordValid(p)){window.toast?.('La contraseña no cumple los requisitos');return}
-  if(p!==c){window.toast?.('Las contraseñas no coinciden');return}
-  let users=getUsers();const user=users.find(u=>u.id===pendingFirstLoginUserId);if(!user){window.toast?.('Usuario no disponible');return}
-  const salt=randomSalt(),hash=await hashPassword(p,salt);
-  users=users.map(u=>u.id===user.id?{...u,passwordHash:hash,passwordSalt:salt,passwordAlgorithm:'SHA-256+salt',password:'',mustChangePassword:false,firstAccessCompletedAt:new Date().toISOString(),updatedAt:new Date().toISOString()}:u);
-  putUsers(users);await syncUsersNow(users);
-  document.getElementById('v3712ForceOverlay')?.classList.remove('open');pendingFirstLoginUserId='';
-  completeAccess(users.find(u=>u.id===user.id),window.currentSession?.()?.sessionId||'');
+  const p=txt(document.getElementById('v3712NewPassword')?.value);
+  const c=txt(document.getElementById('v3712ConfirmPassword')?.value);
+
+  const button=document.getElementById('v3712SavePasswordBtn')||
+    document.querySelector('#v3712ForceOverlay button[onclick*="v3712SaveMandatoryPassword"]');
+
+  if(!passwordValid(p)){
+    window.toast?.('La contraseña debe tener mínimo 8 caracteres, una mayúscula, una minúscula y un número');
+    return;
+  }
+  if(p!==c){
+    window.toast?.('Las contraseñas no coinciden');
+    return;
+  }
+
+  let users=getUsers();
+  const user=users.find(u=>u.id===pendingFirstLoginUserId);
+
+  if(!user){
+    window.toast?.('Usuario no disponible. Cierre e inicie sesión nuevamente');
+    return;
+  }
+
+  if(button){
+    button.disabled=true;
+    button.textContent='Guardando contraseña…';
+  }
+
+  try{
+    const salt=randomSalt();
+    const hash=await hashPassword(p,salt);
+    const changedAt=new Date().toISOString();
+
+    users=users.map(u=>u.id===user.id?{
+      ...u,
+      passwordHash:hash,
+      passwordSalt:salt,
+      passwordAlgorithm:'SHA-256+salt',
+      password:'',
+      mustChangePassword:false,
+      firstAccessCompletedAt:u.firstAccessCompletedAt||changedAt,
+      passwordChangedAt:changedAt,
+      updatedAt:changedAt
+    }:u);
+
+    /* Guardado local inmediato: no depende de que Firebase responda. */
+    putUsers(users);
+
+    const updatedUser=users.find(u=>u.id===user.id);
+    const sessionId=window.currentSession?.()?.sessionId||'';
+
+    document.getElementById('v3712ForceOverlay')?.classList.remove('open');
+    pendingFirstLoginUserId='';
+    completeAccess(updatedUser,sessionId);
+    window.toast?.('Contraseña actualizada correctamente');
+
+    /*
+      Firebase se actualiza en segundo plano.
+      Si la conexión tarda o falla, el usuario ya puede ingresar y el cambio queda local.
+    */
+    Promise.resolve(syncUsersNow(users))
+      .then(()=>console.info('[V3.9.13] Contraseña sincronizada con Firebase'))
+      .catch(err=>{
+        console.warn('[V3.9.13] Contraseña guardada localmente; Firebase pendiente',err);
+        window.toast?.('Contraseña guardada. Firebase se sincronizará al recuperar conexión');
+      });
+
+  }catch(err){
+    console.error('[V3.9.13 contraseña]',err);
+    window.toast?.('No se pudo actualizar la contraseña: '+(err?.message||err));
+
+    if(button){
+      button.disabled=false;
+      button.textContent='Guardar contraseña e ingresar';
+    }
+  }
 };
 
 window.performLogin=async function(){
@@ -15516,95 +15588,7 @@ setTimeout(()=>document.querySelectorAll('.version').forEach(v=>v.textContent='V
      La prevención de doble clic se maneja únicamente con el botón del formulario y siempre se libera en finally. -->
 
 
-<script id="v37107-admin-login-default">
-(function(){
-'use strict';
 
-const ADMIN_ID='usr_admin_default';
-const USERS_KEY='ERP_COMPRAS_USUARIOS_V3_0_8';
-
-function ensureAdministrator(){
-  try{
-    let users=JSON.parse(localStorage.getItem(USERS_KEY)||'[]');
-    if(!Array.isArray(users)) users=[];
-    if(!users.some(u=>String(u?.id||'')===ADMIN_ID)){
-      users.unshift({
-        id:ADMIN_ID,
-        nombre:'Administrador ERP',
-        correo:'admin@psi.local',
-        area:'Administración',
-        cargo:'Administrador',
-        rol:'Administrador',
-        estado:'Activo',
-        password:'admin123',
-        mustChangePassword:false,
-        createdAt:new Date().toISOString(),
-        updatedAt:new Date().toISOString()
-      });
-      localStorage.setItem(USERS_KEY,JSON.stringify(users));
-    }
-  }catch(err){
-    console.warn('[V3.7.10.7] No se pudo verificar el Administrador:',err);
-  }
-}
-
-function selectAdministrator(){
-  const select=document.getElementById('loginUser');
-  if(!select) return false;
-  ensureAdministrator();
-
-  if(!Array.from(select.options).some(o=>o.value===ADMIN_ID)){
-    try{ window.populateLoginUsers?.(); }catch(_){ }
-  }
-
-  const adminOption=Array.from(select.options).find(o=>o.value===ADMIN_ID);
-  if(!adminOption) return false;
-  select.value=ADMIN_ID;
-  select.dispatchEvent(new Event('change',{bubbles:true}));
-  return true;
-}
-
-function applyDefaultAdmin(){
-  let attempts=0;
-  const timer=setInterval(()=>{
-    attempts++;
-    if(selectAdministrator()||attempts>=12) clearInterval(timer);
-  },100);
-}
-
-ensureAdministrator();
-
-if(document.readyState==='loading'){
-  document.addEventListener('DOMContentLoaded',applyDefaultAdmin,{once:true});
-}else{
-  applyDefaultAdmin();
-}
-
-const overlay=document.getElementById('loginOverlay');
-if(overlay){
-  let wasOpen=overlay.classList.contains('open');
-  new MutationObserver(()=>{
-    const isOpen=overlay.classList.contains('open');
-    if(isOpen&&!wasOpen) applyDefaultAdmin();
-    wasOpen=isOpen;
-  }).observe(overlay,{attributes:true,attributeFilter:['class']});
-}
-
-const previousShowLogin=window.showLogin;
-window.showLogin=function(){
-  const result=previousShowLogin?.apply(this,arguments);
-  setTimeout(applyDefaultAdmin,0);
-  return result;
-};
-
-setTimeout(()=>{
-  document.querySelectorAll('.version').forEach(v=>{
-    v.textContent='V3.7.10.11 · COTIZACIÓN LIMPIA + OC SELECTIVA';
-  });
-},300);
-
-})();
-</script>
 <script id="v37101010-seleccion-cotizacion-oc-parcial">
 (function(){
 'use strict';
@@ -18939,6 +18923,480 @@ if(document.readyState==='loading'){
 })();
 </script>
 
+
+<style id="v399-role-picker-style">
+.v399-role-picker{
+  display:grid;
+  grid-template-columns:repeat(5,minmax(120px,1fr));
+  gap:8px;
+  margin-top:4px;
+}
+.v399-role-option{
+  border:1px solid var(--border);
+  background:var(--surface);
+  color:var(--muted);
+  border-radius:10px;
+  padding:10px 8px;
+  font-weight:900;
+  cursor:pointer;
+  text-align:center;
+  user-select:none;
+}
+.v399-role-option:hover{
+  border-color:var(--accent);
+  color:var(--text);
+}
+.v399-role-option.active{
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#06251f;
+  box-shadow:0 4px 14px rgba(0,194,160,.18);
+}
+.v399-role-note{
+  margin-top:8px;
+  font-size:11px;
+  color:var(--muted);
+}
+@media(max-width:900px){
+  .v399-role-picker{grid-template-columns:1fr 1fr}
+}
+</style>
+
+<script id="v399-stable-role-selector-and-users-refresh">
+(function(){
+'use strict';
+
+const VERSION='V3.9.9 · SELECTOR DE ROLES ESTABLE';
+const ROLES=['Administrador','Gerencia','Calidad','Financiera','Laboratorio'];
+
+function escHtml(v){
+  return String(v??'').replace(/[&<>"']/g,c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function normalizeRole(v){
+  const value=String(v||'').trim();
+  const map={
+    Contabilidad:'Financiera',
+    Finanzas:'Financiera',
+    Compras:'Laboratorio',
+    Consulta:'Laboratorio',
+    Bodega:'Laboratorio'
+  };
+  const mapped=map[value]||value;
+  return ROLES.includes(mapped)?mapped:'Laboratorio';
+}
+
+function setRole(role){
+  const normalized=normalizeRole(role);
+  const hidden=document.getElementById('usr_rol');
+  if(hidden)hidden.value=normalized;
+
+  document.querySelectorAll('.v399-role-option').forEach(btn=>{
+    const active=btn.dataset.role===normalized;
+    btn.classList.toggle('active',active);
+    btn.setAttribute('aria-pressed',active?'true':'false');
+  });
+
+  const label=document.getElementById('v399SelectedRole');
+  if(label)label.textContent='Rol seleccionado: '+normalized;
+}
+
+window.v399SelectRole=setRole;
+
+function buildRolePicker(current){
+  const role=normalizeRole(current);
+  return `
+    <div class="fg full">
+      <label>Rol *</label>
+      <input id="usr_rol" type="hidden" value="${escHtml(role)}">
+      <div class="v399-role-picker" role="group" aria-label="Roles oficiales">
+        ${ROLES.map(r=>`
+          <button type="button"
+                  class="v399-role-option ${r===role?'active':''}"
+                  data-role="${escHtml(r)}"
+                  aria-pressed="${r===role?'true':'false'}"
+                  onclick="v399SelectRole('${escHtml(r)}')">${escHtml(r)}</button>
+        `).join('')}
+      </div>
+      <div id="v399SelectedRole" class="v399-role-note">Rol seleccionado: ${escHtml(role)}</div>
+    </div>`;
+}
+
+function getUsers(){
+  try{
+    const rows=JSON.parse(localStorage.getItem('ERP_COMPRAS_USUARIOS_V3_0_8')||'[]');
+    return Array.isArray(rows)?rows:[];
+  }catch(_){
+    return [];
+  }
+}
+
+async function refreshUsersFromFirebase(){
+  try{
+    if(typeof window.erpSyncUsersFirebaseOfficial==='function'){
+      await window.erpSyncUsersFirebaseOfficial();
+    }else if(typeof window.reconcileUsersWithFirebase==='function'){
+      await window.reconcileUsersWithFirebase();
+    }
+  }catch(err){
+    console.warn('[V3.9.9 usuarios Firebase]',err);
+  }
+
+  try{window.populateLoginUsers?.()}catch(_){}
+  try{window.renderSecurityUsers?.()}catch(_){}
+}
+
+const previousOpenUserEditor=window.openUserEditor;
+window.openUserEditor=function(id=''){
+  const users=getUsers();
+  const user=users.find(u=>u.id===id)||{
+    nombre:'',
+    correo:'',
+    area:'',
+    cargo:'',
+    rol:'Laboratorio',
+    estado:'Activo',
+    mustChangePassword:true
+  };
+
+  const body=`<div class="grid">
+    <div class="fg"><label>Nombre completo *</label><input id="usr_nombre" value="${escHtml(user.nombre||'')}"></div>
+    <div class="fg"><label>Correo *</label><input id="usr_correo" type="email" value="${escHtml(user.correo||'')}"></div>
+    <div class="fg"><label>Área</label><input id="usr_area" value="${escHtml(user.area||'')}"></div>
+    <div class="fg"><label>Cargo</label><input id="usr_cargo" value="${escHtml(user.cargo||'')}"></div>
+    ${buildRolePicker(user.rol)}
+    <div class="fg"><label>Estado</label><select id="usr_estado">
+      <option ${user.estado==='Activo'?'selected':''}>Activo</option>
+      <option ${user.estado==='Inactivo'?'selected':''}>Inactivo</option>
+    </select></div>
+    <div class="fg full"><label>${id?'Nueva contraseña (opcional)':'Contraseña temporal *'}</label>
+      <input id="usr_password" type="password" autocomplete="new-password"
+             placeholder="${id?'Deje vacío para conservarla':'Mínimo 8 caracteres'}">
+    </div>
+    <label class="check fg full">
+      <input id="usr_force_change" type="checkbox" ${(!id||user.mustChangePassword)?'checked':''}>
+      Obligar cambio de contraseña en el próximo ingreso
+    </label>
+  </div>
+  <div class="v3712-password-note">
+    La contraseña se guarda como hash SHA-256 con sal individual. No se almacena en texto visible.
+  </div>`;
+
+  const foot=`<button class="btn ghost" onclick="closeModal()">Cancelar</button>
+              <button class="btn" onclick="saveERPUser('${escHtml(id)}')">Guardar usuario</button>`;
+
+  if(typeof window.openModal==='function'){
+    window.openModal(id?'Editar usuario':'Nuevo usuario',body,foot);
+    requestAnimationFrame(()=>setRole(user.rol));
+    return;
+  }
+
+  return previousOpenUserEditor?.apply(this,arguments);
+};
+try{openUserEditor=window.openUserEditor}catch(_){}
+
+const previousSave=window.saveERPUser;
+window.saveERPUser=async function(id=''){
+  const hidden=document.getElementById('usr_rol');
+  if(!hidden||!ROLES.includes(hidden.value)){
+    try{window.toast?.('Seleccione uno de los cinco roles oficiales')}catch(_){}
+    return;
+  }
+  return previousSave?.apply(this,arguments);
+};
+try{saveERPUser=window.saveERPUser}catch(_){}
+
+const previousGo=window.go;
+window.go=function(page){
+  const result=previousGo?.apply(this,arguments);
+  if(page==='usuariosSeguridad'){
+    setTimeout(refreshUsersFromFirebase,250);
+  }
+  return result;
+};
+try{go=window.go}catch(_){}
+
+function addRefreshStatus(){
+  const host=document.getElementById('usuariosSeguridad');
+  if(!host)return;
+
+  const existing=host.querySelector('#v399UserStatus');
+  if(existing)return;
+
+  const panel=host.querySelector('.panel');
+  if(!panel)return;
+
+  const count=getUsers().length;
+  const badge=document.createElement('div');
+  badge.id='v399UserStatus';
+  badge.className='help';
+  badge.style.padding='10px 12px';
+  badge.style.borderBottom='1px solid var(--border)';
+  badge.innerHTML=`Usuarios disponibles en esta computadora: <b>${count}</b>.
+    <button class="btn ghost" style="margin-left:8px" onclick="erpSyncUsersFirebaseOfficial?.().then(()=>renderSecurityUsers?.())">
+      ☁️ Actualizar usuarios desde Firebase
+    </button>`;
+  panel.insertBefore(badge,panel.firstChild);
+}
+
+const previousRender=window.renderSecurityUsers;
+window.renderSecurityUsers=function(){
+  const result=previousRender?.apply(this,arguments);
+  setTimeout(addRefreshStatus,0);
+  return result;
+};
+try{renderSecurityUsers=window.renderSecurityUsers}catch(_){}
+
+function boot(){
+  document.querySelectorAll('.version').forEach(el=>el.textContent=VERSION);
+  setTimeout(refreshUsersFromFirebase,700);
+}
+
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',boot,{once:true});
+}else{
+  boot();
+}
+})();
+</script>
+
+
+<style id="v3910-password-change-visible-style">
+/* V3.9.10 · El formulario de cambio obligatorio siempre cabe en pantalla */
+.v3712-force-overlay{
+  overflow:auto !important;
+  align-items:center !important;
+  justify-content:center !important;
+  padding:16px !important;
+}
+.v3712-force-card{
+  width:min(480px,96vw) !important;
+  max-height:calc(100vh - 32px) !important;
+  display:flex !important;
+  flex-direction:column !important;
+}
+.v3712-force-head{
+  flex:0 0 auto !important;
+  padding:16px 18px !important;
+}
+.v3712-force-body{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  overflow:auto !important;
+  padding:16px 18px 18px !important;
+}
+#v3712SavePasswordBtn{
+  position:sticky !important;
+  bottom:0 !important;
+  z-index:2 !important;
+  display:block !important;
+  width:100% !important;
+  margin-top:14px !important;
+  min-height:44px !important;
+  box-shadow:0 -8px 18px rgba(5,12,18,.35) !important;
+}
+@media(max-height:650px){
+  .v3712-force-head{padding:12px 16px !important}
+  .v3712-force-body{padding:12px 16px 14px !important}
+  .v3712-password-note{margin-top:6px !important;padding:7px 8px !important}
+}
+</style>
+
+
+
+
+<style id="v3911-password-save-status-style">
+#v3911PasswordStatus{
+  display:none;
+  margin-top:10px;
+  padding:9px 10px;
+  border-radius:9px;
+  font-size:11px;
+  font-weight:800;
+  line-height:1.4;
+}
+#v3911PasswordStatus.show{display:block}
+#v3911PasswordStatus.error{
+  color:var(--danger);
+  border:1px solid rgba(239,68,68,.45);
+  background:rgba(239,68,68,.10);
+}
+#v3911PasswordStatus.ok{
+  color:var(--green);
+  border:1px solid rgba(34,197,94,.45);
+  background:rgba(34,197,94,.10);
+}
+#v3911PasswordStatus.info{
+  color:var(--blue);
+  border:1px solid rgba(59,157,255,.45);
+  background:rgba(59,157,255,.10);
+}
+</style>
+
+
+
+
+<script id="v3913-password-version-label">
+(function(){
+  const label='V3.9.13 · CONTRASEÑA CORREGIDA';
+  function apply(){
+    document.querySelectorAll('.version').forEach(el=>el.textContent=label);
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(apply,500),{once:true});
+  }else{
+    setTimeout(apply,0);
+  }
+})();
+</script>
+
+
+<script id="v3915-clean-login-and-password-button">
+(function(){
+'use strict';
+
+const VERSION='V3.9.15 · ACCESO Y CONTRASEÑA ESTABLES';
+let chosenUserId='';
+
+function loginSelect(){
+  return document.getElementById('loginUser');
+}
+
+function rememberUser(){
+  const select=loginSelect();
+  if(select?.value){
+    chosenUserId=String(select.value);
+    try{sessionStorage.setItem('ERP_LOGIN_SELECTED_USER',chosenUserId)}catch(_){}
+  }
+}
+
+function restoreUser(){
+  const select=loginSelect();
+  if(!select)return;
+
+  if(!chosenUserId){
+    try{chosenUserId=sessionStorage.getItem('ERP_LOGIN_SELECTED_USER')||''}catch(_){}
+  }
+
+  if(chosenUserId && Array.from(select.options).some(o=>String(o.value)===chosenUserId)){
+    select.value=chosenUserId;
+  }
+}
+
+function installStableSelector(){
+  const select=loginSelect();
+  if(!select)return;
+
+  if(!select.dataset.v3915Stable){
+    select.dataset.v3915Stable='1';
+    select.addEventListener('change',rememberUser);
+    select.addEventListener('input',rememberUser);
+  }
+
+  restoreUser();
+}
+
+function cleanPasswordButtons(){
+  const overlay=document.getElementById('v3712ForceOverlay');
+  if(!overlay)return;
+
+  const buttons=[...overlay.querySelectorAll('button')].filter(button=>{
+    const label=String(button.textContent||'').toLowerCase();
+    return label.includes('guardar contraseña') || label.includes('guardando contraseña');
+  });
+
+  if(!buttons.length)return;
+
+  const primary=buttons[0];
+  primary.id='v3712SavePasswordBtn';
+  primary.type='button';
+  primary.disabled=false;
+  primary.style.display='block';
+  primary.style.width='100%';
+
+  // Elimina cualquier botón duplicado creado por versiones anteriores.
+  buttons.slice(1).forEach(button=>button.remove());
+
+  // Usa únicamente la función original corregida del motor de usuarios.
+  primary.onclick=function(event){
+    event.preventDefault();
+    event.stopPropagation();
+
+    if(typeof window.v3712SaveMandatoryPassword!=='function'){
+      window.toast?.('La función de cambio de contraseña no está disponible');
+      return;
+    }
+
+    window.v3712SaveMandatoryPassword();
+  };
+
+  const confirm=document.getElementById('v3712ConfirmPassword');
+  if(confirm && !confirm.dataset.v3915Enter){
+    confirm.dataset.v3915Enter='1';
+    confirm.addEventListener('keydown',event=>{
+      if(event.key==='Enter'){
+        event.preventDefault();
+        primary.click();
+      }
+    });
+  }
+}
+
+const originalPopulate=window.populateLoginUsers;
+window.populateLoginUsers=function(){
+  rememberUser();
+  const result=typeof originalPopulate==='function'
+    ? originalPopulate.apply(this,arguments)
+    : undefined;
+
+  requestAnimationFrame(()=>{
+    installStableSelector();
+    restoreUser();
+  });
+
+  return result;
+};
+
+const originalShowLogin=window.showLogin;
+window.showLogin=function(){
+  const result=typeof originalShowLogin==='function'
+    ? originalShowLogin.apply(this,arguments)
+    : undefined;
+
+  setTimeout(()=>{
+    installStableSelector();
+    restoreUser();
+  },0);
+
+  return result;
+};
+
+function boot(){
+  document.querySelectorAll('.version').forEach(el=>el.textContent=VERSION);
+
+  installStableSelector();
+  cleanPasswordButtons();
+
+  // Solo verificaciones de arranque; no hay intervalos que vuelvan a Administrador.
+  [250,700,1400,2500].forEach(ms=>{
+    setTimeout(()=>{
+      installStableSelector();
+      restoreUser();
+      cleanPasswordButtons();
+    },ms);
+  });
+}
+
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',boot,{once:true});
+}else{
+  boot();
+}
+})();
+</script>
+
 </html>
 
 <!-- OPCION AGREGADA SUGERIDA: <option value="Insumo">Insumo</option> -->
@@ -21898,3 +22356,24 @@ function boot(){document.querySelectorAll('.version').forEach(v=>v.textContent=V
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot,250));else setTimeout(boot,250);
 })();
 </script>
+
+
+
+
+
+
+<style id="v3914-password-direct-status-style">
+#v3914PasswordStatus{
+  display:none;
+  margin-top:10px;
+  padding:10px 11px;
+  border-radius:10px;
+  font-size:11px;
+  font-weight:900;
+  line-height:1.45;
+}
+#v3914PasswordStatus.show{display:block}
+</style>
+
+
+
